@@ -269,6 +269,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
             const result = await streamText({
               messages: [...processedMessages],
               env: context.cloudflare?.env,
+              cookieHeader,
               options,
               apiKeys,
               files,
@@ -310,6 +311,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
         const result = await streamText({
           messages: [...processedMessages],
           env: context.cloudflare?.env,
+          cookieHeader,
           options,
           apiKeys,
           files,

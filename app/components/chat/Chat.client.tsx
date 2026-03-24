@@ -108,7 +108,18 @@ export const ChatImpl = memo(
     });
     const [provider, setProvider] = useState(() => {
       const savedProvider = Cookies.get('selectedProvider');
-      return (PROVIDER_LIST.find((p) => p.name === savedProvider) || DEFAULT_PROVIDER) as ProviderInfo;
+
+      if (!savedProvider) {
+        return DEFAULT_PROVIDER as ProviderInfo;
+      }
+
+      return (
+        PROVIDER_LIST.find((p) => p.name === savedProvider) ||
+        ({
+          name: savedProvider,
+          staticModels: [],
+        } as ProviderInfo)
+      );
     });
     const { showChat } = useStore(chatStore);
     const [animationScope, animate] = useAnimate();

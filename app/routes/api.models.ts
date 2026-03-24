@@ -3,6 +3,12 @@ import { LLMManager } from '~/lib/modules/llm/manager';
 import type { ModelInfo } from '~/lib/modules/llm/types';
 import type { ProviderInfo } from '~/types/model';
 import { getApiKeysFromCookie, getProviderSettingsFromCookie } from '~/lib/api/cookies';
+import { readCustomProvidersDocument } from '~/lib/.server/custom-providers-storage';
+import {
+  customProviderToModelInfoList,
+  customProviderToProviderInfo,
+  getEnabledCustomProviders,
+} from '~/lib/custom-providers';
 
 interface ModelsResponse {
   modelList: ModelInfo[];
@@ -58,7 +64,15 @@ export async function loader({
   const apiKeys = getApiKeysFromCookie(cookieHeader);
   const providerSettings = getProviderSettingsFromCookie(cookieHeader);
 
-  const { providers, defaultProvider } = getProviderInfo(llmManager);
+  const { providers: builtInProviders, defaultProvider } = getProviderInfo(llmManager);
+  const { document: customProvidersDoc } = await readCustomProvidersDocument({
+    env: context.cloudflare?.env,
+    cookieHeader,
+  });
+  const enabledCustomProviders = getEnabledCustomProviders(customProvidersDoc);
+  const customProviders = enabledCustomProviders
+    .filter((provider) => !builtInProviders.some((builtInProvider) => builtInProvider.name === provider.name))
+    .map((provider) => customProviderToProviderInfo(provider));
 
   let modelList: ModelInfo[] = [];
 
@@ -72,19 +86,28 @@ export async function loader({
         providerSettings,
         serverEnv: context.cloudflare?.env,
       });
+    } else {
+      const customProvider = enabledCustomProviders.find((entry) => entry.name === params.provider);
+      modelList = customProvider ? customProviderToModelInfoList(customProvider) : [];
     }
   } else {
     // Update all models
-    modelList = await llmManager.updateModelList({
+    const builtInModelList = await llmManager.updateModelList({
       apiKeys,
       providerSettings,
       serverEnv: context.cloudflare?.env,
     });
+
+    const customModelList = enabledCustomProviders
+      .filter((provider) => !builtInProviders.some((builtInProvider) => builtInProvider.name === provider.name))
+      .flatMap((provider) => customProviderToModelInfoList(provider));
+
+    modelList = [...builtInModelList, ...customModelList];
   }
 
   return json<ModelsResponse>({
     modelList,
-    providers,
+    providers: [...builtInProviders, ...customProviders],
     defaultProvider,
   });
 }

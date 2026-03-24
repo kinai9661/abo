@@ -4,7 +4,6 @@
     "types": [
       "@remix-run/cloudflare",
       "vite/client",
-      "@cloudflare/workers-types/2023-07-01",
       "@types/dom-speech-recognition",
       "electron"
     ],
@@ -34,5 +33,13 @@
     "**/.server/**/*.tsx",
     "**/.client/**/*.ts",
     "**/.client/**/*.tsx"
+  ],
+  "exclude": [
+    "functions",
+    "api",
+    "node_modules",
+    "build",
+    "dist",
+    "electron"
   ]
 }

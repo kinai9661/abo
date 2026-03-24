@@ -3,7 +3,7 @@
  * Preventing TS checks with files presented in the video for a better presentation.
  */
 import type { JSONValue, Message } from 'ai';
-import React, { type RefCallback, useEffect, useState } from 'react';
+import React, { type RefCallback, useEffect, useMemo, useState } from 'react';
 import { ClientOnly } from 'remix-utils/client-only';
 import { Menu } from '~/components/sidebar/Menu.client';
 import { Workbench } from '~/components/workbench/Workbench.client';
@@ -138,6 +138,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
     const TEXTAREA_MAX_HEIGHT = chatStarted ? 400 : 200;
     const [apiKeys, setApiKeys] = useState<Record<string, string>>(getApiKeysFromCookies());
     const [modelList, setModelList] = useState<ModelInfo[]>([]);
+    const [fetchedProviders, setFetchedProviders] = useState<ProviderInfo[]>([]);
     const [isModelSettingsCollapsed, setIsModelSettingsCollapsed] = useState(false);
     const [isListening, setIsListening] = useState(false);
     const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
@@ -217,8 +218,9 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
         fetch('/api/models')
           .then((response) => response.json())
           .then((data) => {
-            const typedData = data as { modelList: ModelInfo[] };
-            setModelList(typedData.modelList);
+            const typedData = data as { modelList: ModelInfo[]; providers?: ProviderInfo[] };
+            setModelList(typedData.modelList || []);
+            setFetchedProviders(typedData.providers || []);
           })
           .catch((error) => {
             console.error('Error fetching model list:', error);
@@ -341,6 +343,15 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
       }
     };
 
+    const effectiveProviderList = useMemo(() => {
+      const baseProviderList = providerList || (PROVIDER_LIST as ProviderInfo[]);
+      const customProviders = fetchedProviders.filter(
+        (fetchedProvider) => !PROVIDER_LIST.some((builtInProvider) => builtInProvider.name === fetchedProvider.name),
+      );
+
+      return [...baseProviderList, ...customProviders];
+    }, [providerList, fetchedProviders]);
+
     const baseChat = (
       <div
         ref={ref}
@@ -431,7 +442,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                   setIsModelSettingsCollapsed={setIsModelSettingsCollapsed}
                   provider={provider}
                   setProvider={setProvider}
-                  providerList={providerList || (PROVIDER_LIST as ProviderInfo[])}
+                  providerList={effectiveProviderList}
                   model={model}
                   setModel={setModel}
                   modelList={modelList}

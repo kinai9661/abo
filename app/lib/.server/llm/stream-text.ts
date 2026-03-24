@@ -3,6 +3,7 @@ import { MAX_TOKENS, PROVIDER_COMPLETION_LIMITS, isReasoningModel, type FileMap 
 import { getSystemPrompt } from '~/lib/common/prompts/prompts';
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, MODIFICATIONS_TAG_NAME, PROVIDER_LIST, WORK_DIR } from '~/utils/constants';
 import type { IProviderSetting } from '~/types/model';
+import type { ModelInfo } from '~/lib/modules/llm/types';
 import { PromptLibrary } from '~/lib/common/prompt-library';
 import { allowedHTMLElements } from '~/utils/markdown';
 import { LLMManager } from '~/lib/modules/llm/manager';
@@ -10,6 +11,9 @@ import { createScopedLogger } from '~/utils/logger';
 import { createFilesContext, extractPropertiesFromMessage } from './utils';
 import { discussPrompt } from '~/lib/common/prompts/discuss-prompt';
 import type { DesignScheme } from '~/types/design-scheme';
+import { readCustomProvidersDocument } from '~/lib/.server/custom-providers-storage';
+import { customProviderToModelInfoList } from '~/lib/custom-providers';
+import { getCustomProviderModelInstance, getEnabledCustomProviderByName } from '~/lib/.server/custom-provider-runtime';
 
 export type Messages = Message[];
 
@@ -54,6 +58,7 @@ function sanitizeText(text: string): string {
 export async function streamText(props: {
   messages: Omit<Message, 'id'>[];
   env?: Env;
+  cookieHeader?: string | null;
   options?: StreamingOptions;
   apiKeys?: Record<string, string>;
   files?: FileMap;
@@ -104,40 +109,72 @@ export async function streamText(props: {
     return newMessage;
   });
 
-  const provider = PROVIDER_LIST.find((p) => p.name === currentProvider) || DEFAULT_PROVIDER;
-  const staticModels = LLMManager.getInstance().getStaticModelListFromProvider(provider);
-  let modelDetails = staticModels.find((m) => m.name === currentModel);
+  const llmManager = LLMManager.getInstance((serverEnv as Record<string, string>) || {});
+  const builtInProvider = llmManager.getProvider(currentProvider) || PROVIDER_LIST.find((p) => p.name === currentProvider);
+  const { document: customProvidersDocument } = await readCustomProvidersDocument({
+    env: serverEnv as any,
+    cookieHeader: props.cookieHeader ?? null,
+  });
+  const customProvider = builtInProvider ? undefined : getEnabledCustomProviderByName(customProvidersDocument, currentProvider);
 
-  if (!modelDetails) {
-    const modelsList = [
-      ...(provider.staticModels || []),
-      ...(await LLMManager.getInstance().getModelListFromProvider(provider, {
-        apiKeys,
-        providerSettings,
-        serverEnv: serverEnv as any,
-      })),
-    ];
+  let modelDetails: ModelInfo | undefined;
 
-    if (!modelsList.length) {
-      throw new Error(`No models found for provider ${provider.name}`);
-    }
-
-    modelDetails = modelsList.find((m) => m.name === currentModel);
+  if (builtInProvider) {
+    const staticModels = llmManager.getStaticModelListFromProvider(builtInProvider);
+    modelDetails = staticModels.find((m) => m.name === currentModel);
 
     if (!modelDetails) {
-      // Check if it's a Google provider and the model name looks like it might be incorrect
-      if (provider.name === 'Google' && currentModel.includes('2.5')) {
-        throw new Error(
-          `Model "${currentModel}" not found. Gemini 2.5 Pro doesn't exist. Available Gemini models include: gemini-1.5-pro, gemini-2.0-flash, gemini-1.5-flash. Please select a valid model.`,
-        );
+      const modelsList = [
+        ...(builtInProvider.staticModels || []),
+        ...(await llmManager.getModelListFromProvider(builtInProvider, {
+          apiKeys,
+          providerSettings,
+          serverEnv: serverEnv as any,
+        })),
+      ];
+
+      if (!modelsList.length) {
+        throw new Error(`No models found for provider ${builtInProvider.name}`);
       }
 
-      // Fallback to first model with warning
-      logger.warn(
-        `MODEL [${currentModel}] not found in provider [${provider.name}]. Falling back to first model. ${modelsList[0].name}`,
-      );
-      modelDetails = modelsList[0];
+      modelDetails = modelsList.find((m) => m.name === currentModel);
+
+      if (!modelDetails) {
+        // Check if it's a Google provider and the model name looks like it might be incorrect
+        if (builtInProvider.name === 'Google' && currentModel.includes('2.5')) {
+          throw new Error(
+            `Model "${currentModel}" not found. Gemini 2.5 Pro doesn't exist. Available Gemini models include: gemini-1.5-pro, gemini-2.0-flash, gemini-1.5-flash. Please select a valid model.`,
+          );
+        }
+
+        // Fallback to first model with warning
+        logger.warn(
+          `MODEL [${currentModel}] not found in provider [${builtInProvider.name}]. Falling back to first model. ${modelsList[0].name}`,
+        );
+        modelDetails = modelsList[0];
+      }
     }
+  } else if (customProvider) {
+    const customModels = customProviderToModelInfoList(customProvider);
+
+    if (!customModels.length) {
+      throw new Error(`No models found for custom provider ${customProvider.name}`);
+    }
+
+    modelDetails = customModels.find((m) => m.name === currentModel);
+
+    if (!modelDetails) {
+      logger.warn(
+        `MODEL [${currentModel}] not found in custom provider [${customProvider.name}]. Falling back to first model. ${customModels[0].name}`,
+      );
+      modelDetails = customModels[0];
+    }
+  } else {
+    throw new Error(`Provider "${currentProvider}" not found`);
+  }
+
+  if (!modelDetails) {
+    throw new Error(`Model "${currentModel}" not found for provider "${currentProvider}"`);
   }
 
   const dynamicMaxTokens = modelDetails ? getCompletionTokenLimit(modelDetails) : Math.min(MAX_TOKENS, 16384);
@@ -219,7 +256,7 @@ export async function streamText(props: {
     console.log('No locked files found from any source for prompt.');
   }
 
-  logger.info(`Sending llm call to ${provider.name} with model ${modelDetails.name}`);
+  logger.info(`Sending llm call to ${currentProvider} with model ${modelDetails.name}`);
 
   // Log reasoning model detection and token parameters
   const isReasoning = isReasoningModel(modelDetails.name);
@@ -273,13 +310,25 @@ export async function streamText(props: {
     ),
   );
 
-  const streamParams = {
-    model: provider.getModelInstance({
+  let modelInstance;
+
+  if (builtInProvider) {
+    modelInstance = builtInProvider.getModelInstance({
       model: modelDetails.name,
       serverEnv,
       apiKeys,
       providerSettings,
-    }),
+    });
+  } else {
+    if (!customProvider) {
+      throw new Error(`Custom provider "${currentProvider}" not found`);
+    }
+
+    modelInstance = getCustomProviderModelInstance(customProvider, modelDetails.name, serverEnv as any);
+  }
+
+  const streamParams = {
+    model: modelInstance,
     system: chatMode === 'build' ? systemPrompt : discussPrompt(),
     ...tokenParams,
     messages: convertToCoreMessages(processedMessages as any),

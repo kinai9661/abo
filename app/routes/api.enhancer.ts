@@ -78,6 +78,7 @@ async function enhancerAction({ context, request }: ActionFunctionArgs) {
         },
       ],
       env: context.cloudflare?.env as any,
+      cookieHeader,
       apiKeys,
       providerSettings,
       options: {

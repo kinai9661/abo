@@ -23,3 +23,24 @@ export interface IProviderSetting {
 export type IProviderConfig = ProviderInfo & {
   settings: IProviderSetting;
 };
+
+export type CustomProviderType = 'openai-compatible' | 'ollama' | 'lmstudio' | 'vllm' | 'openrouter-gateway';
+
+export interface CustomProviderDefinition {
+  id: string;
+  name: string;
+  type: CustomProviderType;
+  baseUrl: string;
+  enabled: boolean;
+  apiKey?: string;
+  modelList?: string[];
+  headers?: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomProvidersDocument {
+  version: 1;
+  updatedAt: string;
+  providers: CustomProviderDefinition[];
+}

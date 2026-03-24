@@ -2,12 +2,14 @@ import { type ActionFunctionArgs } from '@remix-run/cloudflare';
 import { streamText } from '~/lib/.server/llm/stream-text';
 import type { IProviderSetting, ProviderInfo } from '~/types/model';
 import { generateText } from 'ai';
-import { PROVIDER_LIST } from '~/utils/constants';
 import { MAX_TOKENS, PROVIDER_COMPLETION_LIMITS, isReasoningModel } from '~/lib/.server/llm/constants';
 import { LLMManager } from '~/lib/modules/llm/manager';
 import type { ModelInfo } from '~/lib/modules/llm/types';
 import { getApiKeysFromCookie, getProviderSettingsFromCookie } from '~/lib/api/cookies';
 import { createScopedLogger } from '~/utils/logger';
+import { readCustomProvidersDocument } from '~/lib/.server/custom-providers-storage';
+import { customProviderToModelInfoList } from '~/lib/custom-providers';
+import { getCustomProviderModelInstance, getEnabledCustomProviderByName } from '~/lib/.server/custom-provider-runtime';
 
 export async function action(args: ActionFunctionArgs) {
   return llmCallAction(args);
@@ -103,10 +105,11 @@ async function llmCallAction({ context, request }: ActionFunctionArgs) {
         messages: [
           {
             role: 'user',
-            content: `${message}`,
+            content: `[Model: ${model}]\n\n[Provider: ${providerName}]\n\n${message}`,
           },
         ],
         env: context.cloudflare?.env as any,
+        cookieHeader,
         apiKeys,
         providerSettings,
       });
@@ -152,7 +155,17 @@ async function llmCallAction({ context, request }: ActionFunctionArgs) {
   } else {
     try {
       const models = await getModelList({ apiKeys, providerSettings, serverEnv: context.cloudflare?.env as any });
-      const modelDetails = models.find((m: ModelInfo) => m.name === model);
+      const { document: customProvidersDocument } = await readCustomProvidersDocument({
+        env: context.cloudflare?.env as any,
+        cookieHeader,
+      });
+
+      const builtInModel = models.find((m: ModelInfo) => m.name === model && m.provider === providerName);
+      const customProvider = getEnabledCustomProviderByName(customProvidersDocument, providerName);
+      const customModel = customProvider
+        ? customProviderToModelInfoList(customProvider).find((entry) => entry.name === model)
+        : undefined;
+      const modelDetails = builtInModel || customModel;
 
       if (!modelDetails) {
         throw new Error('Model not found');
@@ -170,9 +183,10 @@ async function llmCallAction({ context, request }: ActionFunctionArgs) {
         });
       }
 
-      const providerInfo = PROVIDER_LIST.find((p) => p.name === provider.name);
+      const llmManager = LLMManager.getInstance((context.cloudflare?.env as Record<string, string>) || {});
+      const providerInfo = llmManager.getProvider(provider.name);
 
-      if (!providerInfo) {
+      if (!providerInfo && !customProvider) {
         throw new Error('Provider not found');
       }
 
@@ -186,6 +200,15 @@ async function llmCallAction({ context, request }: ActionFunctionArgs) {
       const tokenParams = isReasoning ? { maxCompletionTokens: dynamicMaxTokens } : { maxTokens: dynamicMaxTokens };
 
       // Filter out unsupported parameters for reasoning models
+      const modelInstance = providerInfo
+        ? providerInfo.getModelInstance({
+            model: modelDetails.name,
+            serverEnv: context.cloudflare?.env as any,
+            apiKeys,
+            providerSettings,
+          })
+        : getCustomProviderModelInstance(customProvider!, modelDetails.name, context.cloudflare?.env as any);
+
       const baseParams = {
         system,
         messages: [
@@ -194,12 +217,7 @@ async function llmCallAction({ context, request }: ActionFunctionArgs) {
             content: `${message}`,
           },
         ],
-        model: providerInfo.getModelInstance({
-          model: modelDetails.name,
-          serverEnv: context.cloudflare?.env as any,
-          apiKeys,
-          providerSettings,
-        }),
+        model: modelInstance,
         ...tokenParams,
         toolChoice: 'none' as const,
       };

@@ -1,0 +1,13 @@
+{
+  "buildCommand": "pnpm run build",
+  "outputDirectory": "build/client",
+  "installCommand": "pnpm install --no-frozen-lockfile",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/remix" }
+  ],
+  "functions": {
+    "api/remix.js": {
+      "maxDuration": 30
+    }
+  }
+}
